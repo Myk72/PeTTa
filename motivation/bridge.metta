@@ -1,17 +1,15 @@
 ;; MotivOS integration into OmegaClaw's loop.
 
-;; Full pipeline (run once per cycle, inside getContext):
-;;
-;;   1. refreshSignals        — extract signals from OmegaClaw state
-;;   2. runAppraisal          — 6-dim appraisal → update M
-;;   3. runMotivationUpdate   — decay all G/M toward baselines + apply signal effects
-;;   4. decayGoalState        — decay G toward baselines (same homeostatic law)
-;;   5. runHomeostasis        — safety circuit-breaker on M and G
-;;   6. motivationalDecision  — score candidates, select winner
-;;   7. evolveGoalState       — α-blend G toward appraisal-driven proposals
-;;   8. updateSelfModel       — update S from cycle outcome
-;;   9. saveMotivationalState — persist X to long-term memory
-;;  10. Build context block   — inject into LLM prompt
+;; PIPELINE ORDER (one cycle):
+;;   refreshSignals        — extract signals from current loop state
+;;   runAppraisal          — 6 appraisal dimensions → modulator updates
+;;   runMotivationUpdate   — decay M + apply SignalEffect atoms
+;;   runHomeostasis        — fire HomeostaticRule atoms if triggered
+;;   motivationalDecision  — score candidates, select winner
+;;   evolveGoalState       — G_next = (1-α)G + αG_proposed  (on current undecayed G)
+;;   decayGoalState        — decay G toward GoalSpec baselines  (AFTER evolution)
+;;   updateSelfModel       — EMA update of S metrics
+;;   saveMotivationalState — persist X=(G,M,S) to ChromaDB
 
 
 
@@ -23,14 +21,15 @@
       ($appraisalRec (runAppraisal))
 
       ($_ (runMotivationUpdate))
-      ($_ (decayGoalState))
 
       ($homeoFired (runHomeostasis))
       ($motResult (motivationalDecision))
       ((motivational-result $decision $allScores) $motResult)
       ((decision $selectedCand $mode $directive $score) $decision)
 
+      ;; Goal evolution on current (undecayed) values, THEN decay
       ($_ (evolveGoalState))
+      ($_ (collapse (decayGoalState)))
 
       ($hasError   (> (eval (string_length (eval (string-safe (repr (get-state &error)))))) 4))
       ($hasResults (hasContent (get-state &lastresults)))
@@ -47,6 +46,9 @@
       ($scoresStr     (eval (string-safe (repr $allScores))))
       ($decisionStr   (eval (string-safe (repr $decision))))
       ($guidance      (directiveGuidance $directive))
+
+      ;; Translate the winning candidate into a direct imperative for the LLM.
+      ($instruction   (candidateInstruction $selectedCand))
    )
    (eval (py-str (
       " MOTIVATION_SIGNALS: "   $signalsStr
@@ -57,15 +59,37 @@
       " SELF_MODEL: "           $selfModelStr
       " CANDIDATE_SCORES: "     $scoresStr
       " MOTIVATION_DECISION: "  $decisionStr
-      " STEP_POLICY: "          $guidance)))))
+      " STEP_POLICY: "          $guidance
+      " MOTIVATION_INSTRUCTION: " $instruction)))))
+
+
+;; candidateInstruction
+;; Translates the winning candidate name into a direct imperative statement
+;; for the LLM so that MOTIVATION_DECISION becomes a binding directive.
+
+(= (candidateInstruction $directive)
+   (case $directive (
+      (respond "REQUIRED: Respond to the user now. Your primary output MUST include a send command.")
+      (retrieve-memory "REQUIRED: Query long-term memory before responding. Your primary output MUST include a query command.")
+      (search-knowledge "REQUIRED: Search for relevant knowledge before responding. Your primary output MUST include a search or query command.")
+      (execute-skill "REQUIRED: Execute the requested skill or task now. Your primary output MUST include the appropriate skill command.")
+      (learn "REQUIRED: Capture and store new knowledge this cycle. Your primary output MUST include a remember command.")
+      (self-improve "REQUIRED: Reflect on recent failures and update your approach. Consider using remember to store the lesson.")
+      (defer "REQUIRED: Do not take irreversible action this cycle. Verify the situation first before acting.")
+      (ask-clarification "REQUIRED: Ask the user a clarifying question. Your primary output MUST include a send command with a question.")
+      ($other "REQUIRED: Act according to your current motivational state and the STEP_POLICY above.")
+      
+   ))
+)
 
 
 
-;; Extends OmegaClaw's standard context with the full Motive sys block.
-;; LLM sees the scored candidates and selected action; it generates
+;; Extends OmegaClaw's standard context with the full MotivOS block.
+;; The LLM sees scored candidates, the selected action, and a binding instruction.
 (= (getContext)
    (let* (
       ($motivationText (motivationContextBlock))
+      ($_ (println! (MOTIVATION-CONTEXT-BLOCK: $motivationText)))
    )
    (eval (string-safe
       (eval (py-str (
@@ -90,6 +114,7 @@
       ($_ (initSelfModel))
       ($_ (collapse (clearSignals)))
       
+      ($_ (change-state! &new-msg-flag False))
       ; ($_ (tryRestoreOrInit))
    )
    (eval (omegaclaw))))

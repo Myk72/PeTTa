@@ -1,17 +1,4 @@
 ;; Candidate Generation Layer
-;;
-;; Enumerates the set of feasible candidate operations
-;; given current motivational state, appraisal, and context.
-;;
-;; Always-available candidates:
-;;   respond, retrieve-memory, search-knowledge, defer, ask-clarification
-;;
-;; Conditionally available (gated by current state):
-;;   execute-skill   — when there is an active task
-;;   learn           — when novelty or exploration_bias is high
-;;   self-improve    — when failure rate is high AND risk is not excessive
-;;
-;; Outputs a list of candidate names for the Decision Layer.
 
 !(bind! &candidateSpace (new-space))
 
@@ -25,7 +12,6 @@
 (= (getCandidates)
    (collapse (match &candidateSpace (candidate $name) $name)))
 
-.
 (= (taskIsActive)
    (hasContent (get-state &active-task)))
 
