@@ -25,6 +25,18 @@
 (= (alphaMin) 0.01)
 (= (alphaMax) 0.15)
 
+;; MetaMo individuation floor — gInd_over can never go below this value.
+(= (gIndFloor) 0.55)
+
+;; MetaMo transcendence floor — gTrans_over can never go below this value.
+(= (gTransFloor) 0.15)
+
+;; Per-goal minimum floor. Returns 0.0 for goals that have no floor.
+(= (goalFloor gInd_over)  (gIndFloor))
+(= (goalFloor gTrans_over) (gTransFloor))
+(= (goalFloor $other)     0.0)
+
+
 ;; Compute adaptive α from current stability indicators.
 ;; High gInd_over + low risk + low threshold → high α (safe to evolve faster).
 (= (computeAlpha)
@@ -40,13 +52,20 @@
 
 
 ;; evolveGoal — blends proposed value with current value using α.
+;; Applies a per-goal minimum floor after blending (MetaMo identity preservation).
 ;; Returns (goal name new_value).
 (= (evolveGoal $name $proposed)
    (let* (
       ($current (eval (fetchGoalValue $name)))
       ($alpha   (eval (computeAlpha)))
-      ($new     (eval (clamp (+ (* (- 1.0 $alpha) $current)
+      ($blended (eval (clamp (+ (* (- 1.0 $alpha) $current)
                           (* $alpha $proposed)))))
+                          
+      ;; Apply MetaMo floor: the blended result can never go below the floor
+      ($floor   (goalFloor $name))
+      ($new     (if (> $floor 0.0)
+                    (if (< $blended $floor) $floor $blended)
+                    $blended))
       ($_ (eval (replaceGoal $name $new)))
    )
    (goal $name $new)))
@@ -70,7 +89,7 @@
                       (if (== $s ()) False True)))
       ;; Per-goal proposal logic
       ($delta (case $name (
-         ;; Stability goal: strengthen when risk is high
+         ;; Stability goal: strengthen when risk is high, pull toward floor when low risk
          ((gInd_over)
           (* $risk 0.12))
 

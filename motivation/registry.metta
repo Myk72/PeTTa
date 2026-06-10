@@ -88,6 +88,19 @@
 (SignalEffect user-waiting     modulator urgency         0.15)
 (SignalEffect user-waiting     modulator human_deference 0.10)
 
+;; user-angry — direct modulator response to user frustration
+(SignalEffect user-angry       motive    reliability     0.20)
+(SignalEffect user-angry       modulator human_deference 0.15)
+(SignalEffect user-angry       modulator caution         0.20)
+(SignalEffect user-angry       modulator urgency         0.10)
+
+;; danger — immediate safety escalation
+(SignalEffect danger            modulator securing        0.40)
+(SignalEffect danger            modulator caution         0.25)
+(SignalEffect danger            modulator threshold       0.30)
+(SignalEffect danger            modulator persistence    -0.25)
+(SignalEffect danger            modulator arousal        -0.15)
+
 
 ;; Signal→Mode overrides: (SignalMode <signal-kind> <mode>)
 ;;   Some signals force a mode change regardless of current dominant motive.
@@ -96,6 +109,9 @@
 (SignalMode repeated-failure recover)
 (SignalMode verified-success execute)
 (SignalMode task-drift       orient)
+
+(SignalMode user-angry       orient)
+(SignalMode danger           verify)
 
 
 ;; Directive guidance text: (DirectiveText <directive> <guidance-string>)
@@ -254,6 +270,11 @@
 (SignalAppraisal user-waiting      importance    0.60)
 (SignalAppraisal task-drift        novelty       0.60)
 (SignalAppraisal task-drift        uncertainty   0.40)
+(SignalAppraisal user-angry        risk          0.60)
+(SignalAppraisal user-angry        importance    0.50)
+(SignalAppraisal danger            risk          0.80)
+(SignalAppraisal danger            importance    0.70)
+(SignalAppraisal danger            uncertainty   0.40)
 
 
 ;; Appraisal dimension → Modulator update effects

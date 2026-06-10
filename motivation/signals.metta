@@ -1,10 +1,7 @@
 ;; Signal extraction from OmegaClaw loop state.
 
-;; Required atoms from OmegaClaw:
-;;   &prevmsg       — last received user message (string)
-;;   &lastresults   — results from the previous skill dispatch (string)
-;;   &error         — error list from the previous cycle (list)
 
+!(bind! &new-msg-flag (new-state False))
 
 
 (= (hasContent $value)
@@ -30,53 +27,69 @@
       ($activeTask (get-state &active-task))
       ($results    (get-state &lastresults))
       ($error      (get-state &error))
-      ;; Compute predicates once
+      ($isNewMsg   (get-state &new-msg-flag))
       ($hasMsg     (hasContent $msg))
       ($hasResults (hasContent $results))
       ($hasError   (> (eval (string_length (eval (string-safe (repr $error))))) 4))
       ($resultsLen (eval (string_length (eval (string-safe $results)))))
-      ;; Update failure streak
-      ($_ (if $hasError
-              (change-state! &failure-streak (+ (get-state &failure-streak) 1))
+      ;; Only update the streak on active (new-message) cycles.
+      ;; Idle cycles reset the streak so a single old error doesn't compound.
+      ($_ (if $isNewMsg
+              (if $hasError
+                  (change-state! &failure-streak (+ (get-state &failure-streak) 1))
+                  (change-state! &failure-streak 0))
               (change-state! &failure-streak 0)))
       ($failureStreak (get-state &failure-streak))
 
-      ;; --- Signal emission (prioritized) ---
-
-      ;; 1. Repeated failure: multiple consecutive errors
-      ($_ (if (and (> $failureStreak 1) $hasError)
+      ;; 1. Repeated failure: multiple consecutive errors on active cycles
+      ($_ (if (and $isNewMsg (and (> $failureStreak 1) $hasError))
               (addSignal repeated-failure 0.85)
               _))
-      ;; 2. Single failure
-      ($_ (if (and $hasError (<= $failureStreak 1))
+
+      ;; 2. Single failure (first error on an active cycle)
+      ($_ (if (and $isNewMsg (and $hasError (<= $failureStreak 1)))
               (addSignal failure 0.80)
               _))
-      ;; 3. Task drift: user said something new while a different task was active
-      ($_ (if (and $hasMsg (hasContent $activeTask) (!= $msg $activeTask))
+
+      ;; 3. Task drift — only on a new message when topic changed
+      ;;    Compare the incoming message to the previously stored active task.
+      ($_ (if (and $isNewMsg (and (hasContent $activeTask) (!= $msg $activeTask)))
               (addSignal task-drift 0.45)
               _))
-      ;; 4. Ambiguity: user spoke but no results produced
-      ($_ (if (and $hasMsg (not $hasResults) (not $hasError))
+
+      ;; 4. Ambiguity — new message with no results and no error
+      ($_ (if (and $isNewMsg (and (not $hasResults) (not $hasError)))
               (addSignal ambiguity 0.60)
               _))
-      ;; 5. Verified success: substantial results, no errors
-      ($_ (if (and (> $resultsLen 20) (not $hasError))
-              (addSignal verified-success 0.55)
-              _))
-      ;; 6. Progress made: some results (but not large enough for verified-success)
-      ($_ (if (and $hasResults (<= $resultsLen 20) (not $hasError))
+
+      ;; 5. Progress made — recent results are short (quick success)
+      ($_ (if (and $hasResults (and (<= $resultsLen 20) (not $hasError)))
               (addSignal progress-made 0.40)
               _))
-      ;; 7. Stalled progress: user waiting, minimal results, no error
-      ($_ (if (and $hasMsg (not $hasResults) (not $hasError))
+
+      ;; 6. Stalled progress — new message, no results, no error
+      ($_ (if (and $isNewMsg (and (not $hasResults) (not $hasError)))
               (addSignal stalled-progress 0.35)
               _))
-      ;; 8. User waiting: user has a message pending
+
+      ;; 7. User waiting — any cycle where there is an active pending message
       ($_ (if $hasMsg
               (addSignal user-waiting 0.30)
               _))
-      ;; Track the active task
-      ($_ (if $hasMsg
+
+      ;; 8. Semantic extraction — only on new messages (avoid re-calling LLM on idle)
+      ($_ (if $isNewMsg
+              (collapse (let* (($prov (provider))
+                               ($semStr (py-call (lib_llm_ext.extractSemantics $prov $msg)))
+                               ($semList (catch (sread $semStr))))
+                          (if (and (!= $semList ()) (!= $semList (Error)))
+                              (let $s (superpose $semList)
+                                   (add-atom &signal-space $s))
+                              (empty))))
+              _))
+              
+      ;; Track the active task (update only when a new message arrived)
+      ($_ (if $isNewMsg
               (change-state! &active-task $msg)
               _))
    )
