@@ -44,23 +44,21 @@
       ($hasError   (> (eval (string_length (eval (string-safe (repr $error))))) 4))
       ($resultsLen (eval (string_length (eval (string-safe $results)))))
 
-      ;; Failure streak: only updated on active (new-message) cycles.
-      ;; Idle cycles reset it so stale errors never compound.
-      ($_ (if $isNewMsg
-              (if $hasError
-                  (change-state! &failure-streak (+ (get-state &failure-streak) 1))
-                  (change-state! &failure-streak 0))
+      ;; Failure streak: updated based on error presence.
+      ;; Stale errors are cleared by loop.metta idle branch.
+      ($_ (if $hasError
+              (change-state! &failure-streak (+ (get-state &failure-streak) 1))
               (change-state! &failure-streak 0)))
       ($failureStreak (get-state &failure-streak))
       ($repeatThresh  (signalThreshold failure-streak-repeat 1))
 
-      ;; 1. Repeated failure: multiple consecutive errors on active cycles
-      ($_ (if (and $isNewMsg (and (> $failureStreak $repeatThresh) $hasError))
+      ;; 1. Repeated failure: multiple consecutive errors
+      ($_ (if (and (> $failureStreak $repeatThresh) $hasError)
               (addSignal repeated-failure (signalStrength repeated-failure 0.85))
               _))
 
-      ;; 2. Single failure (first error on an active cycle)
-      ($_ (if (and $isNewMsg (and $hasError (<= $failureStreak $repeatThresh)))
+      ;; 2. Single failure (first error)
+      ($_ (if (and $hasError (<= $failureStreak $repeatThresh))
               (addSignal failure (signalStrength failure 0.80))
               _))
 
