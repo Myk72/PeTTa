@@ -1,7 +1,9 @@
 ;; dynamics.metta — Generic decay, adjustment, and signal application.
 
-;; Decay rate: how quickly values return to baseline each tick
-(= (decayRate) 0.15)
+;; Decay rate
+(= (decayRate)
+   (let $v (collapse (match &self (DynamicsConfig decay_rate $x) $x))
+      (if (== $v ()) 0.15 (car-atom $v))))
 
 
 ;; Clamping
@@ -132,8 +134,10 @@
 
 ;; SELF MODEL UPDATE — S component
 
-;; Exponential moving average alpha for self-model metrics.
-(= (selfModelAlpha) 0.20)
+;; Exponential moving average alpha — read from registry
+(= (selfModelAlpha)
+   (let $v (collapse (match &self (DynamicsConfig self_model_alpha $x) $x))
+      (if (== $v ()) 0.20 (car-atom $v))))
 
 ;; Update the self model after each cycle.
 ;;   $hadError   — True if the cycle produced an error

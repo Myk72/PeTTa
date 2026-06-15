@@ -6,125 +6,120 @@
 ;;   G_next = (1 - α) × G_current + α × G_proposed
 ;;
 ;; where α (learning rate) is adaptive:
-;;   α = α_min + (α_max - α_min) × safety_score
+;;   α = alphaMin + (alphaMax - alphaMin) × safety_score
 ;;   safety_score = gInd_over × (1 - risk) × (1 - threshold)
 ;;
-;;   α_min = 0.01  (used when stability is threatened)
-;;   α_max = 0.15  (used when conditions are fully safe)
+;; AlphaBound min/max, GoalFloor, and GoalDeltaWeight atoms
+;; are all read from registry.metta — no hardcoded numbers here.
 ;;
-;; Proposals are derived from the current appraisal state:
-;;   high risk      → strengthen gInd_over
-;;   high opportunity → strengthen gTrans_over
-;;   high novelty   → strengthen learn
-;;   verified success → strengthen help_user, cooperate
-;;   high uncertainty → strengthen learn
-;;   stalled progress → no goal changes (let homeostasis handle it)
+;; MetaMo deltaG:
+;;   The winning candidate carries CandidateDeltaG atoms that propose
+;;   goal adjustments. evolveGoalState blends both the appraisal-driven
+;;   proposal AND the candidate-driven delta into the final value.
 
 
 ;; α bounds
-(= (alphaMin) 0.01)
-(= (alphaMax) 0.15)
+(= (alphaMin)
+   (let $v (collapse (match &self (AlphaBound min $x) $x))
+      (if (== $v ()) 0.01 (car-atom $v))))
 
-;; MetaMo individuation floor — gInd_over can never go below this value.
-(= (gIndFloor) 0.55)
-
-;; MetaMo transcendence floor — gTrans_over can never go below this value.
-(= (gTransFloor) 0.15)
-
-;; Per-goal minimum floor. Returns 0.0 for goals that have no floor.
-(= (goalFloor gInd_over)  (gIndFloor))
-(= (goalFloor gTrans_over) (gTransFloor))
-(= (goalFloor $other)     0.0)
+(= (alphaMax)
+   (let $v (collapse (match &self (AlphaBound max $x) $x))
+      (if (== $v ()) 0.15 (car-atom $v))))
 
 
-;; Compute adaptive α from current stability indicators.
+;; Per-goal floor
+;; Returns 0.0 for goals that have no GoalFloor atom registered.
+(= (goalFloor $name)
+   (let $v (collapse (match &self (GoalFloor $name $f) $f))
+      (if (== $v ()) 0.0 (car-atom $v))))
+
+
+;; Adaptive α computation
 ;; High gInd_over + low risk + low threshold → high α (safe to evolve faster).
 (= (computeAlpha)
    (let* (
       ($gInd    (eval (fetchGoalValue gInd_over)))
       ($risk    (eval (getAppraisalDim risk)))
       ($thr     (eval (fetchModulatorValue threshold)))
-      ;; safety_score ∈ [0,1]: high when stable, low when stressed
       ($safety  (* $gInd (* (- 1.0 $risk) (- 1.0 $thr))))
       ($alpha   (+ (alphaMin) (* (- (alphaMax) (alphaMin)) $safety)))
    )
    (clamp $alpha)))
 
 
-;; evolveGoal — blends proposed value with current value using α.
-;; Applies a per-goal minimum floor after blending (MetaMo identity preservation).
-;; Returns (goal name new_value).
-(= (evolveGoal $name $proposed)
+;; evolveGoal
+;; Blends proposed value with current using α, then applies floor.
+;; $proposed — appraisal-driven value (from proposedGoalValue)
+;; $candidateDelta — extra nudge from the winning candidate's CandidateDeltaG
+(= (evolveGoal $name $proposed $candidateDelta)
    (let* (
       ($current (eval (fetchGoalValue $name)))
       ($alpha   (eval (computeAlpha)))
+      ;; α-blend with appraisal proposal
       ($blended (eval (clamp (+ (* (- 1.0 $alpha) $current)
                           (* $alpha $proposed)))))
-                          
-      ;; Apply MetaMo floor: the blended result can never go below the floor
+      ;; Add candidate-driven nudge on top of blended result
+      ($nudged  (eval (clamp (+ $blended $candidateDelta))))
+      ;; Apply MetaMo floor: value cannot go below floor
       ($floor   (goalFloor $name))
       ($new     (if (> $floor 0.0)
-                    (if (< $blended $floor) $floor $blended)
-                    $blended))
+                    (if (< $nudged $floor) $floor $nudged)
+                    $nudged))
       ($_ (eval (replaceGoal $name $new)))
    )
    (goal $name $new)))
 
 
-
-;; Compute a proposed value for a single goal based on the current appraisal.
-;; The proposal is the current value ± a small appraisal-driven delta.
-;; The actual evolution step will α-blend this with the current value,
-;; so the net change per cycle is small.
+;; proposedGoalValue
+;; Computes a proposed value for a single goal driven by the
+;; current appraisal dimensions. Uses GoalDeltaWeight atoms from
+;;
+;; Special case: help_user uses verified-success signal presence
+;; to choose between positive (progress) and negative (risk) deltas.
 (= (proposedGoalValue $name)
    (let* (
-      ($current   (eval (fetchGoalValue $name)))
-      ($risk      (eval (getAppraisalDim risk)))
-      ($opp       (eval (getAppraisalDim opportunity)))
-      ($novelty   (eval (getAppraisalDim novelty)))
-      ($progress  (eval (getAppraisalDim progress)))
-      ($uncertainty (eval (getAppraisalDim uncertainty)))
-      ;; Check for specific positive signal
+      ($current  (eval (fetchGoalValue $name)))
       ($hasSuccess (let $s (collapse (match &signal-space (signal verified-success $_) yes))
                       (if (== $s ()) False True)))
-      ;; Per-goal proposal logic
-      ($delta (case $name (
-         ;; Stability goal: strengthen when risk is high, pull toward floor when low risk
-         ((gInd_over)
-          (* $risk 0.12))
-
-         ;; Transcendence goal: strengthen with opportunity, weaken with high risk
-         ((gTrans_over)
-          (- (* $opp 0.10) (* $risk 0.05)))
-
-         ;; Help user: reward with success signal, penalise with risk
-         ((help_user)
-          (if $hasSuccess (* $progress 0.06) (* $risk -0.03)))
-
-         ;; Learn: driven by novelty and uncertainty
-         ((learn)
-          (* (+ $novelty $uncertainty) 0.05))
-
-         ;; Cooperate: rises with progress (things are working well together)
-         ((cooperate)
-          (* $progress 0.04))
-
-         ;; For any unrecognised name: no change
-         ($_ 0.0)
-      )))
+      ;; Sum all registered GoalDeltaWeight contributions for this goal
+      ($delta (sumList
+                 (collapse
+                    (let (GoalDeltaWeight $name $dim $scale)
+                         (match &self (GoalDeltaWeight $name $dim $scale)
+                                      (GoalDeltaWeight $name $dim $scale))
+                    ;; For help_user/risk: only penalise when no success signal
+                    (let $dimVal (getAppraisalDim $dim)
+                       (if (and (== $name help_user)
+                                (and (== $dim risk) $hasSuccess))
+                           0.0
+                           (* $scale $dimVal)))))
+                 0.0))
    )
    (clamp (+ $current $delta))))
 
 
+;; candidateGoalDelta
+;; Returns the CandidateDeltaG contribution for a single goal
+;; given the winning candidate name. Returns 0.0 when no atom exists.
+(= (candidateGoalDelta $candidateName $goalName)
+   (let $v (collapse (match &self (CandidateDeltaG $candidateName $goalName $d) $d))
+      (if (== $v ()) 0.0 (car-atom $v))))
 
-;; Applies proposedGoalValue + α-blending to every GoalSpec goal.
-(= (evolveGoalState)
+
+;; evolveGoalState
+;; Applies proposedGoalValue + candidate deltaG + α-blending
+;; to every GoalSpec goal.
+;; $winningCandidate — name of the candidate selected by motivationalDecision
+(= (evolveGoalState $winningCandidate)
    (let* (
       ($_ (println! ("Running goal evolution...")))
       ($updates (collapse
          (let (GoalSpec $name $_b)
               (match &self (GoalSpec $name $_b) (GoalSpec $name $_b))
-           (evolveGoal $name (proposedGoalValue $name)))))
+          (evolveGoal $name
+                      (proposedGoalValue $name)
+                      (candidateGoalDelta $winningCandidate $name)))))
       ($_ (println! (eval (py-str ("Goal updates: " (repr $updates))))))
    )
    $updates))
