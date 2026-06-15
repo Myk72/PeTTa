@@ -14,11 +14,17 @@
 (ModulatorSpec exploration_bias  0.40)
 (ModulatorSpec context_depth     0.50)
 (ModulatorSpec human_deference   0.40)
+(ModulatorSpec arousal           0.50)
+(ModulatorSpec valence           0.50)
+(ModulatorSpec threshold         0.40)
+(ModulatorSpec securing          0.30)
+(ModulatorSpec focus             0.55)
 
 
-;; Score weights: (ScoreWeight <motive> <modulator> <sign>)
-;;   sign = 1.0  means the modulator adds positively to the motive's score
-;;   sign = -1.0 means it subtracts (e.g. adaptivity anti-correlates with persistence)
+;; SCORE WEIGHTS
+;; (ScoreWeight <motive> <modulator> <sign>)
+;;   sign = 1.0  → modulator adds to motive score
+;;   sign = -1.0 → modulator subtracts
 (ScoreWeight clarity         context_depth     1.0)
 (ScoreWeight clarity         caution           1.0)
 (ScoreWeight progress        urgency           1.0)
@@ -33,8 +39,8 @@
 (ScoreWeight responsiveness  human_deference   1.0)
 
 
-;; Decision mappings: (DecisionMap <motive> <mode> <directive>)
-;;   When a motive wins, this determines the agent's behavioral mode.
+;; DECISION MAPPINGS
+;; (DecisionMap <motive> <mode> <directive>)
 (DecisionMap clarity         orient   inspect)
 (DecisionMap progress        execute  execute)
 (DecisionMap reliability     verify   verify)
@@ -43,9 +49,10 @@
 (DecisionMap responsiveness  execute  execute)
 
 
-;; Signal→Effect mappings: (SignalEffect <signal-kind> <target-type> <target-name> <scale>)
-;;   target-type is either 'motive' or 'modulator'
-;;   scale > 0 means signal raises the target; < 0 means it lowers it
+;; SIGNAL EFFECTS
+;; (SignalEffect <signal-kind> <target-type> <target-name> <scale>)
+;;   target-type: motive | modulator
+;;   scale > 0 → raises target; scale < 0 → lowers target
 
 ;; ambiguity
 (SignalEffect ambiguity        motive    clarity         0.40)
@@ -88,13 +95,13 @@
 (SignalEffect user-waiting     modulator urgency         0.15)
 (SignalEffect user-waiting     modulator human_deference 0.10)
 
-;; user-angry — direct modulator response to user frustration
+;; user-angry
 (SignalEffect user-angry       motive    reliability     0.20)
 (SignalEffect user-angry       modulator human_deference 0.15)
 (SignalEffect user-angry       modulator caution         0.20)
 (SignalEffect user-angry       modulator urgency         0.10)
 
-;; danger — immediate safety escalation
+;; danger
 (SignalEffect danger            modulator securing        0.40)
 (SignalEffect danger            modulator caution         0.25)
 (SignalEffect danger            modulator threshold       0.30)
@@ -102,34 +109,41 @@
 (SignalEffect danger            modulator arousal        -0.15)
 
 
-;; Signal→Mode overrides: (SignalMode <signal-kind> <mode>)
-;;   Some signals force a mode change regardless of current dominant motive.
+;; SIGNAL MODE OVERRIDES
+;; (SignalMode <signal-kind> <mode>)
 (SignalMode ambiguity        orient)
 (SignalMode failure          verify)
 (SignalMode repeated-failure recover)
 (SignalMode verified-success execute)
 (SignalMode task-drift       orient)
-
 (SignalMode user-angry       orient)
 (SignalMode danger           verify)
 
 
-;; Directive guidance text: (DirectiveText <directive> <guidance-string>)
+;; SIGNAL STRENGTHS
+;; (SignalStrength <signal-kind> <default-strength>)
+;; Replaces all hardcoded literal strengths inside signals.metta.
+(SignalStrength repeated-failure 0.85)
+(SignalStrength failure          0.80)
+(SignalStrength task-drift       0.45)
+(SignalStrength ambiguity        0.60)
+(SignalStrength stalled-progress 0.35)
+(SignalStrength progress-made    0.40)
+(SignalStrength user-waiting     0.30)
+
+
+;; DIRECTIVE GUIDANCE TEXT
+;; (DirectiveText <directive> <guidance-string>)
 (DirectiveText inspect  "Inspect first. Prefer reading, querying, and narrowing the problem before broader action.")
 (DirectiveText verify   "Verify first. Check consistency and avoid making multiple changes before confidence improves.")
 (DirectiveText recover  "FORMAT ERROR RECOVERY: Output raw lines ONLY. NO parentheses. NO quotes. Example: send Hello")
 (DirectiveText execute  "Execute normally. Advance the task directly while respecting current motivation state.")
 
 
-;; GOAL VECTOR — G (over-arching + domain goals + anti-goals)
-
+;; GOAL VECTOR
 ;; (GoalSpec <name> <baseline>)
-;;   gInd_over  — stability / self-preservation (always-on, high baseline)
-;;   gTrans_over — growth / exploration / transcendence (moderate baseline)
 (GoalSpec gInd_over   0.70)
 (GoalSpec gTrans_over 0.40)
-
-;; Domain goals
 (GoalSpec help_user   0.60)
 (GoalSpec learn       0.45)
 (GoalSpec cooperate   0.50)
@@ -140,33 +154,94 @@
 (AntiGoalSpec contradiction 0.10)
 (AntiGoalSpec unsafe        0.05)
 
+;;  GOAL FLOORS (MetaMo Identity Preservation) 
+;; (GoalFloor <goal-name> <minimum-value>)
+(GoalFloor gInd_over   0.55)
+(GoalFloor gTrans_over 0.15)
 
-;; ADDITIONAL MODULATORS — M (PSI theory extensions)
+;; GOAL EVOLUTION BOUNDS
+;; (AlphaBound min <value>) / (AlphaBound max <value>)
+;; α = alphaMin + (alphaMax - alphaMin) × safety_score
+(AlphaBound min 0.01)
+(AlphaBound max 0.15)
 
-;; arousal   — activity / exploration intensity       (PSI: activation level)
-;; valence   — positive/negative appraisal register
-;; threshold — conservativeness required before acting (PSI: selection threshold)
-;; securing  — safety / caution bias                  (PSI: safety valence)
-;; focus     — concentration on current goal
-(ModulatorSpec arousal    0.50)
-(ModulatorSpec valence    0.50)
-(ModulatorSpec threshold  0.40)
-(ModulatorSpec securing   0.30)
-(ModulatorSpec focus      0.55)
+;; GOAL DELTA WEIGHTS (Appraisal-Driven Goal Proposals)
+;; (GoalDeltaWeight <goal-name> <appraisal-dim> <scale>)
+
+(GoalDeltaWeight gInd_over    risk         0.12)
+(GoalDeltaWeight gTrans_over  opportunity  0.10)
+(GoalDeltaWeight gTrans_over  risk        -0.05)
+(GoalDeltaWeight help_user    progress     0.06)
+(GoalDeltaWeight help_user    risk        -0.03)
+(GoalDeltaWeight learn        novelty      0.05)
+(GoalDeltaWeight learn        uncertainty  0.05)
+(GoalDeltaWeight cooperate    progress     0.04)
+
+;; CANDIDATE DELTA-G (MetaMo Action-Driven Goal Updates)
+;; (CandidateDeltaG <candidate> <goal-name> <delta>)
+;; The winning candidate proposes these goal adjustments.
+;; This connects MotivOS to the MetaMo principle that actions
+;; carry a deltaG — a proposed goal state change.
+(CandidateDeltaG respond           help_user    0.04)
+(CandidateDeltaG respond           cooperate    0.02)
+(CandidateDeltaG retrieve-memory   learn        0.03)
+(CandidateDeltaG search-knowledge  learn        0.03)
+(CandidateDeltaG search-knowledge  gTrans_over  0.01)
+(CandidateDeltaG execute-skill     help_user    0.05)
+(CandidateDeltaG execute-skill     gTrans_over  0.02)
+(CandidateDeltaG learn             learn        0.06)
+(CandidateDeltaG learn             gTrans_over  0.04)
+(CandidateDeltaG self-improve      gTrans_over  0.05)
+(CandidateDeltaG self-improve      learn        0.04)
+(CandidateDeltaG defer             gInd_over    0.03)
+(CandidateDeltaG ask-clarification gInd_over    0.02)
+(CandidateDeltaG ask-clarification help_user    0.02)
 
 
-;; SELF MODEL — S (performance & identity metrics)
-
-;; (SelfModelSpec <name> <baseline>)
-(SelfModelSpec success_rate        0.50)
-(SelfModelSpec failure_rate        0.10)
-(SelfModelSpec resource_usage      0.30)
-(SelfModelSpec memory_confidence   0.70)
-(SelfModelSpec identity_continuity 0.90)
+;;  ANTI-SATURATION CONFIG
+;; (AntiSaturation <key> <value>)
+;; Replaces hardcoded constants in decision.metta.
+(AntiSaturation threshold 3)    ;; consecutive safety wins before penalty kicks in
+(AntiSaturation step      0.06) ;; penalty increment per extra win
+(AntiSaturation max       0.30) ;; maximum penalty cap
 
 
-;; CANDIDATE OPERATIONS
+;; DYNAMICS CONFIG
+;; (DynamicsConfig <key> <value>)
+;; Replaces hardcoded decay and EMA constants.
+(DynamicsConfig decay_rate        0.15)
+(DynamicsConfig self_model_alpha  0.20)
 
+
+;; CANDIDATE CONDITIONS
+;; (CandidateCondition <candidate> <condition-type> <param> <threshold>)
+;; Replaces hardcoded conditions in candidates.metta.
+;;   condition-type: appraisal-above | modulator-above | self-metric-above | always | task-active
+(CandidateCondition respond           always            _                _    )
+(CandidateCondition retrieve-memory   always            _                _    )
+(CandidateCondition search-knowledge  always            _                _    )
+(CandidateCondition defer             always            _                _    )
+(CandidateCondition ask-clarification always            _                _    )
+(CandidateCondition execute-skill     task-active       _                _    )
+(CandidateCondition learn             appraisal-above   novelty          0.50 )
+(CandidateCondition learn             modulator-above   exploration_bias 0.50 )
+(CandidateCondition self-improve      self-metric-above failure_rate     0.35 )
+(CandidateCondition self-improve      appraisal-below   risk             0.65 )
+
+
+;; SIGNAL THRESHOLDS
+;; (SignalThreshold <signal-check> <threshold>)
+;; Replaces hardcoded comparison values in signals.metta.
+(SignalThreshold failure-streak-repeat    1   ) ;; streak > this → repeated-failure
+(SignalThreshold progress-made-maxlen     20  ) ;; results shorter than this → progress-made
+(SignalThreshold ambiguity-uncertainty    0.55) ;; uncertainty above → uncertaintyHigh
+(SignalThreshold explore-novelty          0.50) ;; novelty above → explorationCondition
+(SignalThreshold explore-exploration_bias 0.50) ;; exploration_bias above → explorationCondition
+(SignalThreshold self-improve-failure     0.35) ;; failure_rate above → selfImproveCondition
+(SignalThreshold self-improve-risk        0.65) ;; risk below → selfImproveCondition
+
+
+;; ADDITIONAL CANDIDATE SPECS
 ;; (CandidateSpec <name> <type>)
 ;;   type ∈ { execution | knowledge | growth | safety }
 (CandidateSpec respond           execution)
@@ -204,7 +279,7 @@
 (CandidateGoalAlignment ask-clarification help_user       0.60)
 (CandidateGoalAlignment ask-clarification coherence       0.50)
 
-;; Candidate risk factors [0,1] — used in stability and risk penalties
+;; Candidate risk factors [0,1]
 ;; (CandidateRiskFactor <candidate> <risk>)
 (CandidateRiskFactor respond           0.10)
 (CandidateRiskFactor retrieve-memory   0.05)
@@ -217,8 +292,6 @@
 
 ;; Candidate type → modulator weight links
 ;; (CandidateTypeModulator <type> <modulator> <sign>)
-;;   sign > 0 means modulator boosts this candidate type's score
-;;   sign < 0 means modulator suppresses it
 (CandidateTypeModulator execution  urgency           1.0)
 (CandidateTypeModulator execution  persistence       0.5)
 (CandidateTypeModulator execution  threshold        -0.5)
@@ -232,7 +305,7 @@
 (CandidateTypeModulator safety     threshold         0.5)
 (CandidateTypeModulator safety     caution           0.5)
 
-;; Candidate → Decision output: maps winning candidate to behavioral mode + directive
+;; Candidate → Decision output map
 ;; (CandidateDecisionMap <candidate> <mode> <directive>)
 (CandidateDecisionMap respond           execute  execute)
 (CandidateDecisionMap retrieve-memory   orient   inspect)
@@ -244,11 +317,8 @@
 (CandidateDecisionMap ask-clarification orient   inspect)
 
 
-;; APPRAISAL LAYER — signal → dimension mappings
-
+;; APPRAISAL LAYER
 ;; (SignalAppraisal <signal-kind> <dimension> <weight>)
-;;   dimension ∈ { novelty | risk | importance | uncertainty | opportunity | progress }
-;;   Appraisal dimension value = Σ (signal_strength × weight)  clamped to [0,1]
 (SignalAppraisal failure           risk          0.70)
 (SignalAppraisal failure           importance    0.50)
 (SignalAppraisal failure           uncertainty   0.40)
@@ -276,10 +346,8 @@
 (SignalAppraisal danger            importance    0.70)
 (SignalAppraisal danger            uncertainty   0.40)
 
-
 ;; Appraisal dimension → Modulator update effects
 ;; (AppraisalEffect <dimension> <modulator> <delta-scale>)
-;;   Effect = dimension_value × delta-scale  added to modulator (then clamped)
 (AppraisalEffect novelty      arousal           0.30)
 (AppraisalEffect novelty      exploration_bias  0.20)
 (AppraisalEffect novelty      focus            -0.10)
@@ -303,12 +371,8 @@
 
 ;; (HomeostaticRule <condition-type> <metric-name> <threshold>
 ;;                  <action-type> <target> <delta>)
-;;
 ;;   condition-type: modulator-exceeds | self-metric-below
 ;;   action-type:    raise-modulator | lower-modulator | raise-goal | lower-goal
-;;
-;; Rule fires when: condition-type(metric-name) crosses threshold.
-;; Action: adjusts target by ±delta.
 
 ;; Excessive securing → raise threshold, dampen exploration and arousal
 (HomeostaticRule modulator-exceeds  securing            0.75 raise-modulator threshold         0.25)
@@ -318,7 +382,7 @@
 ;; Excessive caution → dampen exploration
 (HomeostaticRule modulator-exceeds  caution             0.80 lower-modulator exploration_bias  0.15)
 
-;; Low memory confidence → raise threshold, lower persistence (don't persist on bad info)
+;; Low memory confidence → raise threshold, lower persistence
 (HomeostaticRule self-metric-below  memory_confidence   0.20 raise-modulator threshold         0.20)
 (HomeostaticRule self-metric-below  memory_confidence   0.20 lower-modulator persistence       0.15)
 
@@ -329,3 +393,12 @@
 ;; Low identity continuity → strengthen stability goal and securing
 (HomeostaticRule self-metric-below  identity_continuity 0.30 raise-goal      gInd_over         0.05)
 (HomeostaticRule self-metric-below  identity_continuity 0.30 raise-modulator securing          0.10)
+
+
+;; SELF MODEL SPECS
+;; (SelfModelSpec <name> <baseline>)
+(SelfModelSpec success_rate        0.50)
+(SelfModelSpec failure_rate        0.10)
+(SelfModelSpec resource_usage      0.30)
+(SelfModelSpec memory_confidence   0.70)
+(SelfModelSpec identity_continuity 0.90)
