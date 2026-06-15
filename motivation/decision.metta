@@ -2,14 +2,20 @@
 
 !(bind! &consecutive-safety-wins (new-state 0))
 
-;; How many consecutive safety wins before applying the anti-saturation penalty.
-(= (safetySaturationThreshold) 3)
 
-;; Per-step penalty increment when saturation is detected.
-(= (safetySaturationStep) 0.06)
+;; Anti-saturation config
+(= (safetySaturationThreshold)
+   (let $v (collapse (match &self (AntiSaturation threshold $x) $x))
+      (if (== $v ()) 3 (car-atom $v))))
 
-;; Maximum anti-saturation penalty (caps at 0.30).
-(= (safetySaturationMax) 0.30)
+(= (safetySaturationStep)
+   (let $v (collapse (match &self (AntiSaturation step $x) $x))
+      (if (== $v ()) 0.06 (car-atom $v))))
+
+(= (safetySaturationMax)
+   (let $v (collapse (match &self (AntiSaturation max $x) $x))
+      (if (== $v ()) 0.30 (car-atom $v))))
+
 
 
 (= (floor01 $x)
@@ -17,14 +23,16 @@
 
 
 
+;; Goal Alignment — weighted sum of goal/motive values for this candidate
 (= (computeGoalAlignment $cand)
    (let $contributions (collapse
          (let (CandidateGoalAlignment $cand $goal $weight)
               (match &self (CandidateGoalAlignment $cand $goal $weight)
                            (CandidateGoalAlignment $cand $goal $weight))
-           (* $weight (fetchGoalOrMotiveValue $goal))))
+          (* $weight (fetchGoalOrMotiveValue $goal))))
    (sumList $contributions 0.0)))
 
+;; Modulator Effects — signed sum of modulator values for candidate type
 (= (computeModulatorEffects $cand)
    (let* (
       ($typeList (collapse (match &self (CandidateSpec $cand $t) $t)))
@@ -33,13 +41,14 @@
          (let (CandidateTypeModulator $type $mod $sign)
               (match &self (CandidateTypeModulator $type $mod $sign)
                            (CandidateTypeModulator $type $mod $sign))
-           (let $modVal (fetchModulatorValue $mod)
-              (if (< $sign 0.0)
-                  (- 0.0 (* (- 0.0 $sign) $modVal))
-                  (* $sign $modVal))))))
+          (let $modVal (fetchModulatorValue $mod)
+             (if (< $sign 0.0)
+                 (- 0.0 (* (- 0.0 $sign) $modVal))
+                 (* $sign $modVal))))))
    )
    (sumList $contributions 0.0)))
 
+;; Transcendence Bonus — growth candidates get gTrans_over boost
 (= (computeTranscendenceBonus $cand)
    (let* (
       ($typeList (collapse (match &self (CandidateSpec $cand $t) $t)))
@@ -49,6 +58,7 @@
        (* (fetchGoalValue gTrans_over) 0.30)
        0.0)))
 
+;; Stability Penalty — risky candidates penalised by gInd × securing
 (= (computeStabilityPenalty $cand)
    (let* (
       ($rfList (collapse (match &self (CandidateRiskFactor $cand $r) $r)))
@@ -58,6 +68,7 @@
    )
    (* $rf (* $gInd $sec))))
 
+;; Risk Penalty — risky candidates penalised by threshold
 (= (computeRiskPenalty $cand)
    (let* (
       ($rfList (collapse (match &self (CandidateRiskFactor $cand $r) $r)))
@@ -66,9 +77,9 @@
    )
    (* $rf $thr)))
 
-;; computeAntiSaturationPenalty
-;; Returns a penalty for safety candidates when they have won too many
-;; consecutive cycles. This breaks infinite defer/ask-clarification loops.
+;; Anti-Saturation Penalty — breaks infinite defer/ask-clarification loops.
+;; After safetySaturationThreshold consecutive safety wins, an escalating
+;; penalty (saturationStep per extra win, capped at saturationMax) is applied.
 (= (computeAntiSaturationPenalty $cand)
    (let* (
       ($typeList (collapse (match &self (CandidateSpec $cand $t) $t)))
@@ -76,11 +87,11 @@
       ($wins     (get-state &consecutive-safety-wins))
    )
    (if (and (== $type safety) (> $wins (safetySaturationThreshold)))
-       ;; Penalty grows with each extra consecutive win, capped at max
        (clamp (min (safetySaturationMax)
                    (* (safetySaturationStep) (- $wins (safetySaturationThreshold)))))
        0.0)))
 
+;; Final candidate score
 (= (scoreCandidate $cand)
    (let* (
       ($ga   (computeGoalAlignment $cand))
@@ -95,17 +106,17 @@
    (scored-candidate $cand $score)))
 
 
-
-;; scoreAllCandidates reads CandidateSpec atoms from &self (global space).
-;; This is the reliable path — always works regardless of &candidate-space state.
+;; Score all registered candidates
+;; Reads CandidateSpec atoms from &self — always correct regardless
+;; of &candidateSpace state.
 (= (scoreAllCandidates)
    (collapse (let (CandidateSpec $cand $_type)
                   (match &self (CandidateSpec $cand $_type)
                                (CandidateSpec $cand $_type))
-               (scoreCandidate $cand))))
+              (scoreCandidate $cand))))
 
 
-;; isSafetyCandidate — True if the candidate type is 'safety'
+;; Safety type check
 (= (isSafetyCandidate $name)
    (let $typeList (collapse (match &self (CandidateSpec $name $t) $t))
       (if (== $typeList ())
@@ -113,7 +124,7 @@
           (== (car-atom $typeList) safety))))
 
 
-;; foldScoredList: left-fold over a scored-candidate list, keeping highest score.
+;; Fold to find the highest-scoring candidate
 (= (foldScoredList () $best) $best)
 (= (foldScoredList $lst $best)
    (let* (
@@ -125,34 +136,36 @@
    (foldScoredList $tail $nextBest)))
 
 
-
 ;; motivationalDecision
-;;   1. Scores ALL registered candidates via scoreAllCandidates.
-;;   2. Folds to find the winner with the highest score.
-;;   3. Updates &consecutive-safety-wins counter for anti-saturation.
-;;   4. Looks up mode + directive from CandidateDecisionMap.
-;;   5. Updates &last-motivation-decision and replaces mode.
-;;   6. Returns (motivational-result decision all-scores).
+;; 1. Scores ALL registered candidates via scoreAllCandidates.
+;; 2. Finds the winner by fold.
+;; 3. Updates &consecutive-safety-wins for anti-saturation.
+;; 4. Looks up mode + directive from CandidateDecisionMap.
+;; 5. Updates &last-motivation-decision and replaces mode.
+;; 6. Returns (motivational-result decision all-scores winning-candidate)
+;;    — the winning candidate name is returned so bridge.metta can
+;;      pass it to evolveGoalState for MetaMo deltaG wiring.
+
 (= (motivationalDecision)
    (let* (
-      ;; Step 1: score all registered candidates
+      ;; Score all registered candidates
       ($allScores (scoreAllCandidates))
 
-      ;; Step 2: find the best-scoring candidate
+      ;; Find best-scoring candidate
       ($initBest  (scored-candidate respond 0.0))
       ($best      (foldScoredList $allScores $initBest))
       ((scored-candidate $name $score) $best)
 
-      ;; Step 3: generate candidate set for auditing / context injection
+      ;; Generate candidate set for audit / context injection
       ($_ (generateCandidates))
 
-      ;; Step 4: update anti-saturation counter
+      ;; Update anti-saturation counter
       ($_ (if (isSafetyCandidate $name)
               (change-state! &consecutive-safety-wins
                              (+ (get-state &consecutive-safety-wins) 1))
               (change-state! &consecutive-safety-wins 0)))
 
-      ;; Step 5: look up mode + directive from registry
+      ;; Look up mode + directive from registry
       ($mapList (collapse (match &self (CandidateDecisionMap $name $mode $directive)
                               (CandidateDecisionMap $name $mode $directive))))
       ($mode    (if (== $mapList ())
@@ -169,4 +182,5 @@
 
       ($_ (println! (eval (py-str ("Motivational decision: " (repr $decision))))))
    )
-   (motivational-result $decision $allScores)))
+   ;; Return winning candidate name alongside result so bridge can use deltaG
+   (motivational-result $decision $allScores $name)))

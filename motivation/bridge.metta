@@ -5,16 +5,19 @@
 ;;   runAppraisal          — 6 appraisal dimensions → modulator updates
 ;;   runMotivationUpdate   — decay M + apply SignalEffect atoms
 ;;   runHomeostasis        — fire HomeostaticRule atoms if triggered
-;;   motivationalDecision  — score candidates, select winner
-;;   evolveGoalState       — G_next = (1-α)G + αG_proposed  (on current undecayed G)
-;;   decayGoalState        — decay G toward GoalSpec baselines  (AFTER evolution)
+;;   motivationalDecision  — score candidates, select winner + return deltaG
+;;   evolveGoalState       — G_next = α-blend(current, appraisal-proposed + candidate-deltaG)
+;;   decayGoalState        — decay G toward GoalSpec baselines (AFTER evolution)
+;;   metaMoSafeRegionCheck — log warning if gInd_over < GoalFloor (MetaMo invariant)
 ;;   updateSelfModel       — EMA update of S metrics
 ;;   saveMotivationalState — persist X=(G,M,S) to ChromaDB
 
 
 
 ;; motivationContextBlock
-;; Run the full motivation cycle and produce a text block for the LLM prompt.
+;; Runs the full motivation cycle and produces a text block for
+;; the LLM prompt. The winning candidate name is extracted and
+;; passed to evolveGoalState to wire the MetaMo deltaG principle.
 (= (motivationContextBlock)
    (let* (
       ($signals (refreshSignals))
@@ -23,14 +26,28 @@
       ($_ (runMotivationUpdate))
 
       ($homeoFired (runHomeostasis))
+      ;; Decision returns (motivational-result decision allScores winningCandidate)
       ($motResult (motivationalDecision))
-      ((motivational-result $decision $allScores) $motResult)
+      ((motivational-result $decision $allScores $winningCand) $motResult)
       ((decision $selectedCand $mode $directive $score) $decision)
 
-      ;; Goal evolution on current (undecayed) values, THEN decay
-      ($_ (evolveGoalState))
+      ;; Goal evolution: passes winning candidate so CandidateDeltaG atoms
+      ;; from registry nudge goals in addition to appraisal-driven proposals.
+      ;; This implements the MetaMo principle that the chosen action carries
+      ;; a deltaG — a proposed goal state update.
+      ($_ (evolveGoalState $winningCand))
       ($_ (collapse (decayGoalState)))
 
+      ;; MetaMo Safe-Region Check
+      ($_ (collapse (let* (
+              ($gIndNow  (eval (fetchGoalValue gInd_over)))
+              ($gIndFlr  (eval (goalFloor gInd_over)))
+           )
+           (if (< $gIndNow $gIndFlr)
+               (println! ("⚠ MetaMo safe-region VIOLATION: gInd_over=" $gIndNow " < floor=" $gIndFlr))
+               (empty)))))
+
+      ($_ (println! ("Debugging if it pass this line 4")))
       ($hasError   (> (eval (string_length (eval (string-safe (repr (get-state &error)))))) 4))
       ($hasResults (hasContent (get-state &lastresults)))
       ($_ (updateSelfModel $hasError $hasResults))
@@ -46,8 +63,6 @@
       ($scoresStr     (eval (string-safe (repr $allScores))))
       ($decisionStr   (eval (string-safe (repr $decision))))
       ($guidance      (directiveGuidance $directive))
-
-      ;; Translate the winning candidate into a direct imperative for the LLM.
       ($instruction   (candidateInstruction $selectedCand))
    )
    (eval (py-str (
@@ -64,28 +79,27 @@
 
 
 ;; candidateInstruction
-;; Translates the winning candidate name into a direct imperative statement
-;; for the LLM so that MOTIVATION_DECISION becomes a binding directive.
-
+;; Translates the winning candidate name into a direct imperative
+;; statement for the LLM. Fully driven by CandidateDecisionMap and
 (= (candidateInstruction $directive)
    (case $directive (
-      (respond "REQUIRED: Respond to the user now. Your primary output MUST include a send command.")
-      (retrieve-memory "REQUIRED: Query long-term memory before responding. Your primary output MUST include a query command.")
-      (search-knowledge "REQUIRED: Search for relevant knowledge before responding. Your primary output MUST include a search or query command.")
-      (execute-skill "REQUIRED: Execute the requested skill or task now. Your primary output MUST include the appropriate skill command.")
-      (learn "REQUIRED: Capture and store new knowledge this cycle. Your primary output MUST include a remember command.")
-      (self-improve "REQUIRED: Reflect on recent failures and update your approach. Consider using remember to store the lesson.")
-      (defer "REQUIRED: Do not take irreversible action this cycle. Verify the situation first before acting.")
+      (respond           "REQUIRED: Respond to the user now. Your primary output MUST include a send command.")
+      (retrieve-memory   "REQUIRED: Query long-term memory before responding. Your primary output MUST include a query command.")
+      (search-knowledge  "REQUIRED: Search for relevant knowledge before responding. Your primary output MUST include a search or query command.")
+      (execute-skill     "REQUIRED: Execute the requested skill or task now. Your primary output MUST include the appropriate skill command.")
+      (learn             "REQUIRED: Capture and store new knowledge this cycle. Your primary output MUST include a remember command.")
+      (self-improve      "REQUIRED: Reflect on recent failures and update your approach. Consider using remember to store the lesson.")
+      (defer             "REQUIRED: Do not take irreversible action this cycle. Verify the situation first before acting.")
       (ask-clarification "REQUIRED: Ask the user a clarifying question. Your primary output MUST include a send command with a question.")
-      ($other "REQUIRED: Act according to your current motivational state and the STEP_POLICY above.")
-      
+      ($other            "REQUIRED: Act according to your current motivational state and the STEP_POLICY above.")
    ))
 )
 
 
-
-;; Extends OmegaClaw's standard context with the full MotivOS block.
-;; The LLM sees scored candidates, the selected action, and a binding instruction.
+;; getContext
+;; Overrides OmegaClaw's standard getContext.
+;; The LLM sees scored candidates, the selected action, and a binding
+;; MOTIVATION_INSTRUCTION that it must honor as a system directive.
 (= (getContext)
    (let* (
       ($motivationText (motivationContextBlock))
@@ -106,14 +120,15 @@
          )))))))
 
 
-;; Entry point: initialize motivation, then start OmegaClaw's loop
+;; motivatedOmegaclaw
+;; Entry point: initialize motivation, then start OmegaClaw's loop.
 (= (motivatedOmegaclaw)
    (let* (
       ($_ (initMotivationState))
       ($_ (initGoalState))
       ($_ (initSelfModel))
       ($_ (collapse (clearSignals)))
-      
+
       ($_ (change-state! &new-msg-flag False))
       ; ($_ (tryRestoreOrInit))
    )
